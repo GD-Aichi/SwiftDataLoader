@@ -38,19 +38,19 @@ final public class DataLoader<Key: Hashable, Value> {
             return cachedFuture
         }
 
-        let promise: EventLoopPromise<Value> = eventLoop.next().newPromise()
+        let promise: EventLoopPromise<Value> = eventLoop.next().makePromise(of: Value.self)
 
         if options.batchingEnabled {
             queue.append((key: key, promise: promise))
         } else {
             _ = try batchLoadFunction([key]).map { results  in
                 if results.isEmpty {
-                    promise.fail(error: DataLoaderError.noValueForKey("Did not return value for key: \(key)"))
+                    promise.fail(DataLoaderError.noValueForKey("Did not return value for key: \(key)"))
                 } else {
                     let result = results[0]
                     switch result {
-                    case .success(let value): promise.succeed(result: value)
-                    case .failure(let error): promise.fail(error: error)
+                    case .success(let value): promise.succeed(value)
+                    case .failure(let error): promise.fail(error)
                     }
                 }
             }
@@ -66,9 +66,9 @@ final public class DataLoader<Key: Hashable, Value> {
     }
 
     public func loadMany(keys: [Key], on eventLoop: EventLoopGroup) throws -> EventLoopFuture<[Value]> {
-        guard !keys.isEmpty else { return eventLoop.next().newSucceededFuture(result: []) }
+        guard !keys.isEmpty else { return eventLoop.next().makeSucceededFuture([])}
 
-        let promise: EventLoopPromise<[Value]> = eventLoop.next().newPromise()
+        let promise: EventLoopPromise<[Value]> = eventLoop.next().makePromise(of: [Value].self)
 
         var result = [Value]()
 
@@ -79,7 +79,7 @@ final public class DataLoader<Key: Hashable, Value> {
                 result.append(value)
 
                 if result.count == keys.count {
-                    promise.succeed(result: result)
+                    promise.succeed(result)
                 }
             }
         }
@@ -102,8 +102,8 @@ final public class DataLoader<Key: Hashable, Value> {
         let cacheKey = options.cacheKeyFunction?(key) ?? key
 
         if futureCache[cacheKey] == nil {
-            let promise: EventLoopPromise<Value> = eventLoop.next().newPromise()
-            promise.succeed(result: value)
+            let promise: EventLoopPromise<Value> = eventLoop.next().makePromise(of: Value.self)
+            promise.succeed(value)
 
             futureCache[cacheKey] = promise.futureResult
         }
@@ -122,7 +122,7 @@ final public class DataLoader<Key: Hashable, Value> {
         // Step through the values, resolving or rejecting each Promise in the
         // loaded queue.
             _ = try batchLoadFunction(keys)
-            .thenThrowing { values in
+            .flatMapThrowing { values in
                 if values.count != keys.count {
                     throw DataLoaderError.typeError("The function did not return an array of the same length as the array of keys. \nKeys count: \(keys.count)\nValues count: \(values.count)")
                 }
@@ -131,12 +131,12 @@ final public class DataLoader<Key: Hashable, Value> {
                     let result = values[entry.offset]
 
                     switch result {
-                    case .failure(let error): entry.element.promise.fail(error: error)
-                    case .success(let value): entry.element.promise.succeed(result: value)
+                    case .failure(let error): entry.element.promise.fail(error)
+                    case .success(let value): entry.element.promise.succeed(value)
                     }
                 }
             }
-            .mapIfError{ error in
+            .recover{ error in
                 self.failedDispatch(queue: queue, error: error)
             }
     }
@@ -163,7 +163,7 @@ final public class DataLoader<Key: Hashable, Value> {
     private func failedDispatch(queue: LoaderQueue<Key, Value>, error: Error) {
         queue.forEach { (key, promise) in
             _ = clear(key: key)
-            promise.fail(error: error)
+            promise.fail(error)
         }
     }
 }
