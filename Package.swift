@@ -12,7 +12,7 @@ let package = Package(
         .library(name: "SwiftDataLoader", targets: ["SwiftDataLoader"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.23.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.23.0")),
     ],
     targets: [
         .target(name: "SwiftDataLoader", dependencies: [
