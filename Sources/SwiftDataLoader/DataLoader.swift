@@ -4,6 +4,7 @@
 //
 //  Created by Kim de Vos on 01/06/2018.
 //
+import Foundation
 import NIO
 
 public enum DataLoaderFutureValue<T> {
@@ -23,6 +24,8 @@ final public class DataLoader<Key: Hashable, Value> {
 
     private var futureCache = [Key: EventLoopFuture<Value>]()
     private var queue = LoaderQueue<Key, Value>()
+    
+    private let conurrentQuery = DispatchQueue(label: "DataLoader")
 
     public init(options: DataLoaderOptions<Key, Value> = DataLoaderOptions(), batchLoadFunction: @escaping BatchLoadFunction<Key, Value>) {
         self.options = options
@@ -34,32 +37,40 @@ final public class DataLoader<Key: Hashable, Value> {
     public func load(key: Key, on eventLoop: EventLoopGroup) throws -> EventLoopFuture<Value> {
         let cacheKey = options.cacheKeyFunction?(key) ?? key
 
-        if options.cachingEnabled, let cachedFuture = futureCache[cacheKey] {
-            return cachedFuture
-        }
-
-        let promise: EventLoopPromise<Value> = eventLoop.next().makePromise(of: Value.self)
-
-        if options.batchingEnabled {
-            queue.append((key: key, promise: promise))
-        } else {
-            _ = try batchLoadFunction([key]).map { results  in
-                if results.isEmpty {
-                    promise.fail(DataLoaderError.noValueForKey("Did not return value for key: \(key)"))
-                } else {
-                    let result = results[0]
-                    switch result {
-                    case .success(let value): promise.succeed(value)
-                    case .failure(let error): promise.fail(error)
-                    }
+        var cachedFuture: EventLoopFuture<Value>?
+        var promise: EventLoopPromise<Value>?
+        
+        conurrentQuery.sync {
+            if options.cachingEnabled, futureCache[cacheKey] != nil {
+                cachedFuture = futureCache[cacheKey]
+            } else {
+                promise = eventLoop.next().makePromise(of: Value.self)
+                if self.options.cachingEnabled {
+                    self.futureCache[cacheKey] = promise?.futureResult
                 }
             }
         }
+        if cachedFuture != nil {
+            return cachedFuture!
+        }
 
-        let future = promise.futureResult
+        let pro = promise!
+        let future = pro.futureResult
 
-        if options.cachingEnabled {
-            futureCache[cacheKey] = future
+        if options.batchingEnabled {
+            queue.append((key: key, promise: pro))
+        } else {
+            _ = try batchLoadFunction([key]).map { results  in
+                if results.isEmpty {
+                    pro.fail(DataLoaderError.noValueForKey("Did not return value for key: \(key)"))
+                } else {
+                    let result = results[0]
+                    switch result {
+                    case .success(let value): pro.succeed(value)
+                    case .failure(let error): pro.fail(error)
+                    }
+                }
+            }
         }
 
         return future
@@ -89,23 +100,29 @@ final public class DataLoader<Key: Hashable, Value> {
 
     func clear(key: Key) -> DataLoader<Key, Value> {
         let cacheKey = options.cacheKeyFunction?(key) ?? key
-        futureCache.removeValue(forKey: cacheKey)
+        conurrentQuery.sync {
+            futureCache.removeValue(forKey: cacheKey)
+        }
         return self
     }
 
     func clearAll() -> DataLoader<Key, Value> {
-        futureCache.removeAll()
+        conurrentQuery.sync {
+            futureCache.removeAll()
+        }
         return self
     }
 
     public func prime(key: Key, value: Value, on eventLoop: EventLoopGroup) -> DataLoader<Key, Value> {
         let cacheKey = options.cacheKeyFunction?(key) ?? key
 
-        if futureCache[cacheKey] == nil {
-            let promise: EventLoopPromise<Value> = eventLoop.next().makePromise(of: Value.self)
-            promise.succeed(value)
-
-            futureCache[cacheKey] = promise.futureResult
+        conurrentQuery.sync {
+            if futureCache[cacheKey] == nil {
+                let promise: EventLoopPromise<Value> = eventLoop.next().makePromise(of: Value.self)
+                promise.succeed(value)
+                
+                futureCache[cacheKey] = promise.futureResult
+            }
         }
 
         return self
